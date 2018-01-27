@@ -1,0 +1,145 @@
+#!/bin/sh
+
+#put this file to:
+#  -rwxr-xr-x 1 root root /lib/cryptsetup/scripts/decrypt_usb
+#/etc/crypttab example:
+#   sda3_crypt UUID=7aa5541d-4ea2-481c-9b89-234fcadbe049 7aa5541d-4ea2-481c-9b89-234fcadbe049.luks luks,discard,keyscript=decrypt_usb
+#sh did not support echo {a..z}
+list_letter="a b c d e f g h i j k l m n o p q r s t u v w x y z"
+list_digital="0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16"
+disk_prefix=/sys/block
+
+message()
+{
+	if [ -x /bin/plymouth ] && plymouth --ping; then
+		plymouth message --text="$@"
+	else
+		echo "$@" >&2
+	fi
+	return 0
+}
+
+#
+# arg1: The name of .luks file, example: 7aa5541d-4ea2-481c-9b89-234fcadbe049.luks
+# arg2: a usb disk to read a luks file. /dev/sdc1, or others.
+# 
+try_load()
+{
+	name=$1
+	usb_dev=$2
+	echo try_load $name from $usb_dev 					>&2
+	string=`blkid $usb_dev -s TYPE -o export | grep TYPE`
+	if [ -z "$string" ];
+	then
+		echo blkid no result						>&2
+		return 1
+	fi
+	key_name=`echo $string | cut -d'=' -f1`
+	key_value=`echo $string | cut -d'=' -f2`
+#	if [ "$key_name"x = "PTTYPE"x ];
+#	then
+#		if [ "$key_value"x = "gpt"x ] || [ "$key_value"x = "dos"x ];then
+#			echo "partition type: $key_value"   			>&2
+#			return 1
+#		fi
+#		return 1
+#	elif [ "$key_name"x = "TYPE"x ];
+	if [ "$key_name"x = "TYPE"x ];
+	then
+		is_supprt=`cat /proc/filesystems | grep $key_value`
+		if [ -z "$is_supprt" ];
+		then
+			echo "filesystems is not support"				>&2
+			return 1
+		fi
+
+	else
+		return 1
+	fi
+	mkdir -p /tmp$usb_dev
+	echo mounting $usb_dev								>&2
+	mount -r $usb_dev /tmp$usb_dev						>&2
+	if [ $? -ne 0 ];
+	then
+		echo Try again mount /tmp$usb_dev				>&2
+		mount -r $usb_dev /tmp$usb_dev					>&2
+	fi
+	if [ $? -eq 0 ];
+	then
+		ret=1
+		echo testing /tmp$usb_dev/$name is exist??			>&2
+		if [ -r /tmp$usb_dev/$name ];
+		then
+			echo found /tmp$usb_dev/$name on $usb_dev		>&2
+			cat /tmp$usb_dev/$name
+			ret=0
+		fi
+		umount /tmp$usb_dev
+		if [ $? -ne 0 ];
+		then
+			echo Try again unmount /tmp$usb_dev			>&2
+			umount /tmp$usb_dev
+		fi
+		return $ret
+	else
+		echo mount fail.						>&2
+		return 1
+	fi
+	
+}
+
+#The real process start.
+
+if [ $CRYPTTAB_TRIED -gt 1 ];
+then
+	echo "Can't load keyfile from usb drive..."				>&2
+	message "Please unlock disk $CRYPTTAB_NAME"
+	/lib/cryptsetup/askpass "Fallback passphrase for $CRYPTTAB_NAME: "
+	exit 0 
+fi
+
+
+
+luks_file_name=$1
+if [ -z "$luks_file_name" ];
+then
+	exit 1
+fi
+
+sleep $((1+$CRYPTTAB_TRIED))
+
+for X in $list_letter
+do
+	target=$disk_prefix/sd$X
+	removable=$target/removable
+	if [ ! -r $removable ]  || [ 0`cat $removable` -ne 1 ];
+	then
+		continue
+	fi
+	size=$target/size
+	if [ 0`cat $size` -le 1048576 ];
+	then
+		continue
+	fi
+	echo found removable disk sd$X						>&2
+	dev=/dev/sd$X
+	try_load $luks_file_name $dev
+	if [ $? -eq 0 ];
+	then
+		exit 0
+	fi
+	for Y in $list_digital
+	do
+		dev=/dev/sd$X$Y
+		if [ -b $dev ];
+		then
+			try_load $luks_file_name $dev
+			if [ $? -eq 0 ];
+			then
+				exit 0
+			fi
+		fi
+	done
+
+done
+exit 0
